@@ -1,0 +1,78 @@
+--- Z_app.py
++++ Z_app_patched.py
+@@ -1,6 +1,29 @@
+ from flask import Flask, request, jsonify
+ import subprocess
+ import requests as req_lib
++import re
++import ipaddress
++import socket
++from urllib.parse import urlparse
++
++ALLOWED_SCHEMES = {'http', 'https'}
++
++BLOCKED_NETWORKS = [
++    ipaddress.ip_network('127.0.0.0/8'),
++    ipaddress.ip_network('10.0.0.0/8'),
++    ipaddress.ip_network('172.16.0.0/12'),
++    ipaddress.ip_network('192.168.0.0/16'),
++    ipaddress.ip_network('169.254.0.0/16'),
++    ipaddress.ip_network('::1/128'),
++]
++
++def is_safe_url(url):
++    try:
++        parsed = urlparse(url)
++        if parsed.scheme not in ALLOWED_SCHEMES:
++            return False
++        ip_str = socket.gethostbyname(parsed.hostname)
++        ip = ipaddress.ip_address(ip_str)
++        return not any(ip in net for net in BLOCKED_NETWORKS)
++    except Exception:
++        return False
+ from markupsafe import escape
+ 
+ app = Flask(__name__)
+@@ -27,11 +50,16 @@
+ @app.route('/ping')
+ def ping():
+     host = request.args.get('host', '127.0.0.1')
+-    
+-    # ОПАСНО: прямая подстановка в shell-команду
+-    cmd = f"ping -c 2 {host}"
++
++    if not re.fullmatch(r'[a-zA-Z0-9\.\-]+', host):
++        return jsonify({"error": "invalid host format"}), 400
++
++    cmd = ["ping", "-c", "2", host]
++
+     try:
+-        result = subprocess.check_output(cmd, shell=True, universal_newlines=True, timeout=5)
++        result = subprocess.check_output(cmd, universal_newlines=True, timeout=5)
+         return jsonify({"output": result})
+     except subprocess.CalledProcessError as e:
+         return jsonify({"error": str(e)}), 500
+@@ -41,12 +69,17 @@
+ @app.route('/fetch')
+ def fetch():
+     url = request.args.get('url')
+     if not url:
+         return jsonify({"error": "url is required"}), 400
+-    
+-    # ОПАСНО: сервер делает запрос по любому URL от клиента
++
++    if not is_safe_url(url):
++        return jsonify({"error": "access to internal networks is forbidden"}), 403
++
+     try:
+         r = req_lib.get(url, timeout=5)
+         return jsonify({
+             "status": r.status_code,
+             "content": r.text[:500]
+         })
+     except Exception as e:
+         return jsonify({"error": str(e)}), 500
+ 
+ if __name__ == '__main__':
+-    app.run(host='0.0.0.0', port=5000, debug=False)
++    app.run(host='127.0.0.1', port=5000, debug=False)
